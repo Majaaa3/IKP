@@ -1,0 +1,386 @@
+Autor: Maja Cimbaljevic i Andjela Mitrovic
+Indeks: PR 19/2022 i PR 18/2022
+Predmet:  Industrijskih komunikacionih protokola u IS 
+Datum: 31.01.2026.
+
+1.1 Opis problema
+-----------------
+Moderne distribuirane aplikacije zahtijevaju efikasnu asinhronu komunikaciju
+izmedju komponenti. Tradicionalni request-response model komunikacije nije 
+dovoljan za scenarije gdje vise komponenti treba da prime istu informaciju 
+bez direktne konekcije izmedju njih.
+
+1.2 Rjesenje - Publisher/Subscriber arhitektura
+-----------------------------------
+Publish/Subscribe (Pub/Sub) je arhitekturni obrazac koji omogucava asinhronu
+komunikaciju izmedju posiljalaca (publishers) i primalaca (subscribers) poruka
+preko posrednika (broker).
+
+Prednosti:
+  1. Publisheri i subscriberi ne moraju znati jedan za drugog
+  2. Jednostavno dodavanje novih komponenti
+  3. Dinamicka pretplata/odjava sa tema
+
+1.3 Ciljevi projekta
+--------------------
+  1. Implementacija multithreaded TCP brokera
+  2. Podska za hijerarhiju tema (tema/podtema)
+  3. Skalabilnost: Podrska za minimum 50 simultanih klijenata
+  4. Niska latencija: < 50ms za isporuku poruka
+  5. Jednostavan tekstualni protokol
+  6. Podrska za 3 tipa klijenata: Admin, Publisher, Subscriber
+
+================================================================================
+2. DIZAJN SISTEMA
+================================================================================
+2.1 Komponente
+--------------
+
+BROKER:
+  1. TCP server (listen na portu 5555)
+  2. Thread-per-client model
+  3. HashMap struktura za teme
+  4. Mutex za thread-safety
+
+ADMIN:
+  1. Kreira/Brise teme i podteme
+  2. Pregled svih pretplata (INFO komanda)
+  3. Lista svih tema (LIST komanda)
+
+PUBLISHER:
+  1. Kreira teme/podteme
+  2. Objavljuje poruke na teme
+  3. Automatski kreira teme ako ne postoje
+
+SUBSCRIBER:
+  1. Pretplacuje se na teme/podteme
+  2. Prima asinhrone poruke
+  3. Moze se odjaviti sa tema
+
+2.2 Komunikacioni protokol
+---------------------------
+
+ID <tip>              → Identifikacija klijenta (admin/publisher/subscriber)
+CREATE <tema>         → Kreiranje teme
+CREATE <tema/podtema> → Kreiranje podteme
+SUB <tema>            → Pretplata na temu
+UNSUB <tema>          → Odjava sa teme
+PUB <tema> <poruka>   → Objavljivanje poruke
+DEL <tema>            → Brisanje teme
+LIST                  → Lista svih tema
+INFO                  → Pregled svih pretplata
+
+Primjer komunikacije:
+  Client → Broker: "ID subscriber\n"
+  Broker → Client: "OK Connected\n"
+  Client → Broker: "SUB Sport/Fudbal\n"
+  Broker → Client: "OK SUB\n"
+  [Publisher objavljuje]
+  Broker → Client: "Poruka Nova poruka na temi Sport/Fudbal: Gol!\n"
+
+2.3 Razlozi za dizajn
+---------------------
+
+TCP umjesto UDP:
+   Garantovana isporuka poruka
+   Kontrola toka
+   Pouzdana veza
+
+Thread-per-client:
+   Jednostavna implementacija
+   Izolacija klijenata
+   Prirodna thread-safety za pojedinačne konekcije
+   Ne skalira za 1000+ klijenata (ali dovoljno za nase zahtjeve)
+
+HashMap za teme:
+   O(1) slozenost pretrage po imenu teme
+   Efikasna upotreba memorije
+
+================================================================================
+3. STRUKTURE PODATAKA
+================================================================================
+
+3.1 HashMap
+-----------
+
+IMPLEMENTACIJA:
+  1. Array od 15 bucket-a (HASH_MAP_SIZE = 15)
+  2. Chaining za rješavanje kolizija (linked list)
+  3. Hash funkcija: suma ASCII vrijednosti % 15
+
+RAZLOG IZBORA:
+  1. Brza pretraga tema po imenu
+  2. Dinamička veličina bez fiksnog limita
+
+SEMANTIKA:
+  struct HashMap {
+      HashMapCvor* korpa[15];
+  }
+  
+  struct HashMapCvor {
+      string kljuc;      // Ime teme
+      void* vrijednost;  // Pokazivač na Topic ili Subscriber
+      HashMapCvor* sledeci;
+  }
+
+OPERACIJE:
+  1. put(kljuc, vrijednost) - dodavanje
+  2. get(kljuc) - dohvaćanje
+  3. contains(kljuc) - provjera postojanja
+  4. remove(kljuc) - brisanje
+
+3.2 Topic (Tema)
+----------------
+
+IMPLEMENTACIJA:
+  struct Topic {
+      string nazivTeme;
+      HashMap* podTeme;           
+      ListaSubskrajbera* subskrajberi;
+  }
+
+RAZLOG IZBORA:
+  1. Hijerarhijska struktura (tema moze imati podteme)
+  2. Svaka tema/podtema ima vlastitu listu subscribera
+
+SEMANTIKA:
+  1. nazivTeme: Jedinstveno ime teme
+  2. podTeme: HashMap podtema (omogucava Sport/Fudbal/Liga)
+  3. subskrajberi: Lista svih koji su pretplaceni
+
+3.3 ListaSubskrajbera
+---------------------
+
+IMPLEMENTACIJA:
+  • Jednostruko povezana lista 
+  
+  struct ListaSubskrajbera {
+      ListaSubskrajberaCvor* glava;
+  }
+  
+  struct ListaSubskrajberaCvor {
+      Subscriber* subskrajber;
+      ListaSubskrajberaCvor* sledeci;
+  }
+
+RAZLOG IZBORA:
+  1. Dinamicko dodavanje/brisanje subscribera
+  2. Nema fiksne veličine (za razliku od array-a)
+  3. Jednostavna iteracija prilikom broadcast-a poruka
+
+OPERACIJE:
+  1. add(subscriber) - dodavanje
+  2. remove(subscriber) - uklanjanje
+  3. contains(subscriber) - provjera
+
+3.4 Subscriber
+--------------
+
+IMPLEMENTACIJA:
+  struct Subscriber {
+      int id;              // Jedinstveni ID
+      string ime;          // Naziv subscribera
+      socket_t sock;       // TCP socket za slanje poruka
+  }
+
+RAZLOG:
+  1. id: Za identifikaciju u INFO komandi
+  2. sock: Za direktno slanje poruka subscriberu
+
+
+1. Build:
+   mkdir build && cd build
+   cmake ..
+   cmake --build .
+
+2. Pokretanje:
+   ./broker                # Server
+   ./admin_client          # Admin
+   ./publisher_client      # Publisher
+   ./subscriber_client     # Subscriber
+   ./stress_test           # Stress test
+================================================================================
+4. STRES TESTOVI
+================================================================================
+   
+4.1 Opis testova
+----------------
+
+Razvijeni su funkcionalni testovi i dva stress testa koji validuju performanse
+i stabilnost sistema.
+
+4.1.1 Funkcionalni testovi
+---------------------------
+
+TEST 1: Osnovna funkcionalnost Publisher/Subscriber mehanizma
+
+Cilj:
+  Proveriti da li subscriber prima poruke koje publisher objavljuje na temu.
+
+Procedura:
+  1. Pokrenut broker.exe
+  2. Publisher kreira temu "Sport"
+  3. Subscriber se pretplaćuje na "Sport"
+  4. Publisher objavljuje poruku "Gol!"
+  5. Provjera da subscriber prima poruku
+
+Rezultat: PROSAO
+  Subscriber je primio poruku u roku od 10ms.
+
+
+TEST 2: Hijerarhijske teme
+---------------------------
+
+Cilj:
+  Testirati funkcionalnost tema/podtema.
+
+Procedura:
+  1. Publisher kreira "Sport" i "Sport/Fudbal"
+  2. Subscriber se pretplaćuje na "Sport"
+  3. Publisher objavljuje na "Sport/Fudbal"
+  4. Provjera da subscriber prima poruku (jer je pretplacen na roditeljsku temu)
+
+Rezultat: PROSAO
+  Subscriber pretplacen na roditeljsku temu prima poruke sa podtema.
+
+
+TEST 3: Brisanje tema
+----------------------
+
+Cilj:
+  Testirati da li se teme pravilno brisu i da subscriberi dobijaju notifikaciju.
+
+Procedura:
+  1. Kreirana tema "Test" sa podtemom "Test/Sub"
+  2. Subscriber se pretplacuje
+  3. Admin brise "Test"
+  4. Provjera da subscriber dobija "DELETED" notifikaciju
+  5. Pokusaj pretplate ponovo 
+
+Rezultat: PROSAO
+  Subscriberi dobijaju notifikaciju o brisanju, ponovna pretplata failuje.
+
+
+4.1.2 Zasto smo odabrale bas ove testove?
+-----------------------------------------
+
+1. OSNOVNA FUNKCIONALNOST (Test 1)
+   Razlog: Ovo je jezgro sistema - ako ovo ne radi, nista drugo nije bitno.
+           Mora biti prvo testirano.
+
+2. HIJERARHIJSKE TEME (Test 2)
+   Razlog: Ova funkcionalnost razlikuje nas sistem od jednostavnih publisher/subscriber
+           implementacija. Mora se verifikovati da hierarchija funkcionise.
+
+3. BRISANJE TEMA (Test 3)
+   Razlog: Memory management i resource cleanup su kriticni. Ako teme ne
+           mogu da se obrisu pravilno, to dovodi do memory leak-ova.
+
+
+4.2 Stress Testovi
+-------------------
+
+4.2.1 Stress Test 1: Skalabilnost sistema
+------------------------------------------
+
+CILJ:
+  Dokazati da sistem efikasno skalira sa povecanjem broja klijenata.
+
+METRIKE:
+  • Throughput (poruke/sekunda)
+  • Success Rate (% uspešno isporucenih poruka)
+  • Trajanje testa
+
+KONFIGURACIJA:
+
+Scenario 1 (LAKO):
+  • Subscriberi: 10
+  • Publisheri: 2
+  • Poruke po publisheru: 100
+  • Ukupno poruka: 200
+
+Scenario 2 (SREDNJE):
+  • Subscriberi: 25
+  • Publisheri: 5
+  • Poruke po publisheru: 100
+  • Ukupno poruka: 500
+
+Scenario 3 (TESKO):
+  • Subscriberi: 50
+  • Publisheri: 10
+  • Poruke po publisheru: 100
+  • Ukupno poruka: 1000
+
+
+4.2.2 Stress Test 2: Memory Leak Test
+--------------------------------------
+
+CILJ:
+  Dokazati da nema curenja memorije kroz visestruke cikluse
+  konektovanja/diskonektovanja.
+
+METRIKE:
+  1. Memory usage prije testa
+  2. Memory usage nakon testa
+  3. Broj konekcija
+
+KONFIGURACIJA:
+  1. 100 ciklusa
+  2. 10 klijenata po ciklusu
+  3. Ukupno: 1000 konekcija
+
+PROCEDURA:
+  1. Mjerenje baseline memorije (broker u idle stanju)
+  2. Izvrsavanje 1000 ciklusa:
+     - Konektovanje 10 klijenata
+     - Kreiranje teme
+     - Pretplata
+     - Diskonektovanje
+  3. Mjerenje memorije nakon testa
+  4. Poredjenje sa baseline-om
+
+RAZLOG IZBORA:
+  Veliki broj ciklusa konektovanja/diskonektovanja je ekstremni scenario
+  koji brzo otkriva memory leak-ove. Ako ima leak, memorija ce eksponencijalno
+  rasti sa svakim ciklusom.
+
+
+4.3 Prikazani rezultati testova
+--------------------------------
+
+================================================================================
+5 Poboljsanja
+================================================================================
+5.1
+Broker koristi std::thread kako bi svaki klijent bio obradjen u zasebnoj niti. Time se omogucava istovremeni rad vise publisher-a, subscriber-a i administratora.
+
+Razlog izbora:
+Visedretveni pristup poboljsava odziv sistema i omogucava paralelnu obradu zahtjeva, što je kljucno za konkurentne mrezne aplikacije.
+================================================================================
+PRILOG B: Source code struktura
+================================================================================
+
+IKP_Project/
+├── src/
+│   ├── main.cpp
+│   ├── client/
+│   │   ├── admin_client.cpp
+│   │   ├── publisher_client.cpp
+│   │   └── subscriber_client.cpp
+│   ├── network/
+│   │   ├── broker.cpp
+│   │   ├── broker.h
+│   │   ├── socket_utils.cpp
+│   │   └── socket_utils.h
+│   ├── model/
+│   │   ├── topic.cpp
+│   │   ├── topic.h
+│   │   ├── subscriber.cpp
+│   │   └── subscriber.h
+│   └── utils/
+│       ├── hash_map.cpp
+│       ├── hash_map.h
+│       ├── subscriber_list.cpp
+│       └── subscriber_list.h
+├── CMakeLists.txt
+└── README.md
